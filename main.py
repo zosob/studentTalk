@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 import ollama
 import asyncio
 import json
@@ -14,7 +14,13 @@ import datetime
 import os
 from typing import List, Dict, Any
 import faiss
+import docx
 import pickle
+import wellbeingMonitor
+import courseKnowledgeBase
+from io import BytesIO
+
+#http://0.0.0.0:8000/wellbeing_dashboard
 
 app = FastAPI(title="Student Chatbot")
 
@@ -37,120 +43,32 @@ chat_history = []
 student_interactions = {}
 wellbeing_flags = []
 
-class WellbeingMonitor:
-    def __init__(self):
-        self.stress_keywords = [
-            'overwhelmed', 'stressed', 'can\'t handle', 'too much', 'giving up',
-            'impossible', 'hopeless', 'failing', 'behind', 'panic', 'anxiety'
-        ]
-        self.confusion_keywords = [
-            'confused', 'don\'t understand', 'makes no sense', 'stuck',
-            'lost', 'help', 'struggling', 'difficult', 'hard'
-        ]
-    
-    def analyze_message(self, message: str, student_id: str) -> Dict[str, Any]:
-        # Sentiment analysis
-        blob = TextBlob(message)
-        vader_scores = sentiment_analyzer.polarity_scores(message)
-        
-        # Keyword detection
-        message_lower = message.lower()
-        stress_count = sum(1 for keyword in self.stress_keywords if keyword in message_lower)
-        confusion_count = sum(1 for keyword in self.confusion_keywords if keyword in message_lower)
-        
-        # Calculate wellbeing score (0-10, lower is concerning)
-        base_score = 5
-        sentiment_adjustment = (vader_scores['compound'] + 1) * 2.5  # Scale to 0-5
-        stress_penalty = stress_count * 1.5
-        confusion_penalty = confusion_count * 0.5
-        
-        wellbeing_score = max(0, base_score + sentiment_adjustment - stress_penalty - confusion_penalty)
-        
-        analysis = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'student_id': student_id,
-            'message': message,
-            'sentiment': {
-                'polarity': blob.sentiment.polarity,
-                'subjectivity': blob.sentiment.subjectivity,
-                'vader': vader_scores
-            },
-            'wellbeing_score': wellbeing_score,
-            'stress_indicators': stress_count,
-            'confusion_indicators': confusion_count,
-            'flag_for_review': wellbeing_score < 3.0 or stress_count > 2
-        }
-        
-        if analysis['flag_for_review']:
-            wellbeing_flags.append(analysis)
-            print(f"⚠️  WELLBEING FLAG: Student {student_id} scored {wellbeing_score:.1f}")
-        
-        return analysis
 
-wellbeing_monitor = WellbeingMonitor()
+#Initialize wellbeing monitor and knowledgebase
+wellbeing_monitor = wellbeingMonitor.WellbeingMonitor()
 
-class CourseKnowledgeBase:
-    def __init__(self):
-        self.documents = []
-        self.embeddings = []
-        self.index = None
-    
-    def add_document(self, content: str, source: str):
-        # Split into chunks for better retrieval
-        chunks = self.chunk_text(content, 500)
-        for i, chunk in enumerate(chunks):
-            self.documents.append({
-                'content': chunk,
-                'source': source,
-                'chunk_id': i
-            })
-            embedding = sentence_model.encode([chunk])[0]
-            self.embeddings.append(embedding)
-        
-        # Build FAISS index
-        if self.embeddings:
-            embeddings_array = np.array(self.embeddings)
-            self.index = faiss.IndexFlatIP(embeddings_array.shape[1])
-            self.index.add(embeddings_array)
-    
-    def chunk_text(self, text: str, chunk_size: int) -> List[str]:
-        words = text.split()
-        chunks = []
-        for i in range(0, len(words), chunk_size):
-            chunk = ' '.join(words[i:i + chunk_size])
-            chunks.append(chunk)
-        return chunks
-    
-    def search_similar(self, query: str, top_k: int = 3) -> List[Dict]:
-        if not self.index:
-            return []
-        
-        query_embedding = sentence_model.encode([query])
-        scores, indices = self.index.search(query_embedding, top_k)
-        
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < len(self.documents):
-                doc = self.documents[idx].copy()
-                doc['similarity_score'] = float(score)
-                results.append(doc)
-        
-        return results
+knowledge_base = courseKnowledgeBase.CourseKnowledgeBase()
 
-knowledge_base = CourseKnowledgeBase()
 
 @app.post("/upload_syllabus")
 async def upload_syllabus(file: UploadFile = File(...)):
+    
     try:
         content = await file.read()
         
         if file.filename.endswith('.pdf'):
             # Extract text from PDF
-            from io import BytesIO
             pdf_reader = PyPDF2.PdfReader(BytesIO(content))
             text = ""
             for page in pdf_reader.pages:
                 text += page.extract_text()
+        elif file.filename.endswith('.docx'):
+            #Extract text from .docx files
+            document = docx.Document(BytesIO(content))
+            text = ""
+
+            for paragraph in document.paragraphs:
+                text += paragraph.text 
         else:
             text = content.decode('utf-8')
         
@@ -159,6 +77,35 @@ async def upload_syllabus(file: UploadFile = File(...)):
     
     except Exception as e:
         return {"error": str(e)}
+    
+
+@app.post("/uploadAssignment")
+async def uploadAssignment(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        
+        if file.filename.endswith('.pdf'):
+            # Extract text from PDF
+            pdf_reader = PyPDF2.PdfReader(BytesIO(content))
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text()
+        elif file.filename.endswith('.docx'):
+            #Extract text from .docx files
+            document = docx.Document(BytesIO(content))
+            text = ""
+
+            for paragraph in document.paragraphs:
+                text += paragraph.text 
+        else:
+            text = content.decode('utf-8')
+        
+        knowledge_base.add_document(text, file.filename)
+        return {"message": f"Successfully uploaded {file.filename}"}
+    
+    except Exception as e:
+        return {"error": str(e)}
+    
 
 @app.get("/wellbeing_dashboard")
 async def get_wellbeing_dashboard():
@@ -234,6 +181,7 @@ Response:"""
             }
             student_interactions[student_id].append(bot_interaction)
             chat_history.append(bot_interaction)
+
             
             # Send response back to student
             await websocket.send_text(json.dumps({
@@ -246,89 +194,10 @@ Response:"""
         print(f"Student {student_id} disconnected")
 
 # Serve static files (HTML frontend)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 async def get_homepage():
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Student Academic Assistant</title>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-            .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .chat-container { height: 400px; border: 1px solid #ddd; padding: 10px; overflow-y: scroll; margin: 20px 0; border-radius: 5px; }
-            .message { margin: 10px 0; padding: 10px; border-radius: 5px; }
-            .user-message { background: #007bff; color: white; text-align: right; }
-            .bot-message { background: #f8f9fa; border-left: 4px solid #007bff; }
-            .input-container { display: flex; gap: 10px; }
-            .message-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
-            .send-btn { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
-            .send-btn:hover { background: #0056b3; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🎓 Academic Assistant</h1>
-            <p>Ask me anything about your C++ or Algorithms course!</p>
-            
-            <div class="chat-container" id="chatContainer">
-                <div class="message bot-message">
-                    Hi! I'm your academic assistant. I can help you with course content, assignments, and programming questions. How can I help you today?
-                </div>
-            </div>
-            
-            <div class="input-container">
-                <input type="text" id="messageInput" class="message-input" placeholder="Type your question here..." onkeypress="handleKeyPress(event)">
-                <button onclick="sendMessage()" class="send-btn">Send</button>
-            </div>
-            
-            <p><small>🔒 Your conversations are monitored for academic support and wellbeing.</small></p>
-        </div>
-
-        <script>
-            const studentId = 'student_' + Math.random().toString(36).substr(2, 9);
-            const ws = new WebSocket(`ws://localhost:8000/ws/${studentId}`);
-            
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                addMessage(data.message, 'bot');
-                
-                if (data.flagged) {
-                    console.log('Student flagged for wellbeing check');
-                }
-            };
-            
-            function addMessage(message, sender) {
-                const chatContainer = document.getElementById('chatContainer');
-                const messageDiv = document.createElement('div');
-                messageDiv.className = `message ${sender}-message`;
-                messageDiv.textContent = message;
-                chatContainer.appendChild(messageDiv);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-            }
-            
-            function sendMessage() {
-                const input = document.getElementById('messageInput');
-                const message = input.value.trim();
-                
-                if (message) {
-                    addMessage(message, 'user');
-                    ws.send(JSON.stringify({message: message}));
-                    input.value = '';
-                }
-            }
-            
-            function handleKeyPress(event) {
-                if (event.key === 'Enter') {
-                    sendMessage();
-                }
-            }
-        </script>
-    </body>
-    </html>
-    """)
+    return FileResponse("static/index.html")
 
 if __name__ == "__main__":
     import uvicorn

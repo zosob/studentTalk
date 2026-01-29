@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+    <head>Student View</head>
+    <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+            .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .chat-container { height: 400px; border: 1px solid #ddd; padding: 10px; overflow-y: scroll; margin: 20px 0; border-radius: 5px; }
+            .message { margin: 10px 0; padding: 10px; border-radius: 5px; }
+            .user-message { background: #007bff; color: white; text-align: right; }
+            .bot-message { background: #f8f9fa; border-left: 4px solid #007bff; }
+            .input-container { display: flex; gap: 10px; }
+            .message-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+            .send-btn { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+            .send-btn:hover { background: #0056b3; }
+        </style>
+
+    <body>
+         <div class="container">
+            <h1>🎓 Academic Assistant</h1>
+            <p>Ask me anything about your C++ or Algorithms course!</p>
+            
+            <div class="chat-container" id="chatContainer">
+                <div class="message bot-message">
+                    Hi! I'm your academic assistant. I can help you with course content, assignments, and programming questions. How can I help you today?
+                </div>
+                
+            </div>
+            
+            <div class="input-container">
+                <input type="text" id="messageInput" class="message-input" placeholder="Type your question here..." onkeypress="handleKeyPress(event)">
+                <button onclick="sendMessage()" class="send-btn">Send</button>
+            </div>
+            
+            <p><small>🔒 Your conversations are monitored for academic support and wellbeing.</small></p>
+        </div>
+
+        <script>
+            const studentId = 'student_' + Math.random().toString(36).substr(2, 9);
+            const ws = new WebSocket(`ws://localhost:8000/ws/${studentId}`);
+            let thinkingMessage = null;
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+
+                if(thinkingMessage){
+                    thinkingMessage.textContent = data.message;
+                    thinkingMessage = null;
+                }else{
+                    addMessage(data.message, 'bot');
+                }
+                
+               
+                
+                if (data.flagged) {
+                    console.log('Student flagged for wellbeing check');
+                }
+            };
+            
+            function addMessage(message, sender) {
+                const chatContainer = document.getElementById('chatContainer');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${sender}-message`;
+                messageDiv.textContent = message;
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+                return messageDiv;
+            }
+            
+            function sendMessage() {
+                const input = document.getElementById('messageInput');
+                const message = input.value.trim();
+                
+                
+                if (message) {
+                    addMessage(message, 'user');
+
+                    thinkingMessage = addMessage('Thinking...', 'bot');
+                    ws.send(JSON.stringify({message: message}));
+                    input.value = '';
+
+                    
+                }
+            }
+
+        
+            
+            function handleKeyPress(event) {
+                if (event.key === 'Enter') {
+                    sendMessage();
+                }
+            }
+        </script>
+        
+
+
+    </body>
+</html>
