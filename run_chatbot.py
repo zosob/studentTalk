@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Student Chatbot Startup Script
+FacultyTwin Startup Script
 """
 
 import subprocess
@@ -44,7 +44,10 @@ def install_requirements():
         'PyPDF2',
         'faiss-cpu',
         'ollama',
-        'python-multipart'
+        'python-multipart',
+        'python-docx',
+        'pydantic',
+        'discord.py'
     ]
     
     print("📦 Installing required packages...")
@@ -60,12 +63,15 @@ def install_requirements():
     return True
 
 def start_server():
-    """Start the FastAPI server"""
+    """Start the FastAPI server. main.py's own startup event launches the
+    Discord bot in-process (see launch_discord_bot in main.py) if
+    DISCORD_BOT_TOKEN is set, so it isn't started separately here."""
     print("🚀 Starting chatbot server...")
     print("📝 Access the chatbot at: http://localhost:8000")
     print("📊 Wellbeing dashboard at: http://localhost:8000/wellbeing_dashboard")
+    print("📈 Faculty weekly digest at: http://localhost:8000/faculty_digest")
     print("\n🔄 Press Ctrl+C to stop the server\n")
-    
+
     try:
         import uvicorn
         from main import app
@@ -76,13 +82,13 @@ def start_server():
         print("❌ Could not import required modules. Please check your installation.")
 
 def main():
-    print("🎓 Student Chatbot Setup")
+    print("🎓 FacultyTwin Setup")
     print("=" * 40)
     
     # Check if we're in the right conda environment
-    if 'student-chatbot' not in os.environ.get('CONDA_DEFAULT_ENV', ''):
-        print("⚠️  Warning: You might not be in the 'student-chatbot' conda environment")
-        print("   Run: conda activate student-chatbot")
+    if 'facultytwin' not in os.environ.get('CONDA_DEFAULT_ENV', ''):
+        print("⚠️  Warning: You might not be in the 'facultytwin' conda environment")
+        print("   Run: conda activate facultytwin")
         print("")
     
     # Install requirements

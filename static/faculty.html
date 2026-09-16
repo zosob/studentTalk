@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <head>Faculty View</head>
+    <title>FacultyTwin — Faculty View</title>
     <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
@@ -15,6 +15,15 @@
             .message-input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
             .send-btn { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
             .send-btn:hover { background: #0056b3; }
+            section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+            table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+            th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 14px; }
+            .flagged-row { background: #fff3f3; }
+            .stat-row { display: flex; gap: 20px; margin: 10px 0; }
+            .stat { background: #f8f9fa; border-radius: 5px; padding: 10px 15px; }
+            .stat b { display: block; font-size: 20px; }
+            label { display: block; margin-top: 8px; font-size: 14px; }
+            input[type="text"], input[type="datetime-local"] { padding: 6px; border: 1px solid #ddd; border-radius: 4px; width: 100%; box-sizing: border-box; }
         </style>
 </head>
 <body>
@@ -33,10 +42,41 @@
         <p id="uploadAssignmentStatus"></p>
     </div>
 
+    <section>
+        <h3>Weekly digest</h3>
+        <button onclick="loadDigest()">Refresh digest</button>
+        <div id="digestStats" class="stat-row"></div>
+        <table id="digestTable">
+            <thead>
+                <tr><th>Student</th><th>Messages</th><th>Avg. wellbeing</th><th>Flags</th></tr>
+            </thead>
+            <tbody id="digestBody"></tbody>
+        </table>
+        <p id="digestStatus"></p>
+    </section>
+
+    <section>
+        <h3>Register an assignment deadline</h3>
+        <p><small>Students who ran <code>!subscribe_nudges</code> in Discord get a reminder DM 24 hours and 2 hours before this due date.</small></p>
+        <label>Assignment ID <input type="text" id="deadlineId" placeholder="hw3"></label>
+        <label>Course <input type="text" id="deadlineCourse" placeholder="CS 201"></label>
+        <label>Title <input type="text" id="deadlineTitle" placeholder="Homework 3"></label>
+        <label>Due <input type="datetime-local" id="deadlineDue"></label>
+        <button onclick="addDeadline()" style="margin-top:10px;">Add deadline</button>
+        <p id="deadlineStatus"></p>
+
+        <table id="deadlineTable">
+            <thead>
+                <tr><th>Assignment</th><th>Course</th><th>Due</th></tr>
+            </thead>
+            <tbody id="deadlineBody"></tbody>
+        </table>
+    </section>
 
 </body>
 
 <script src="/static/uploadCourseContent.js"></script>
+<script src="/static/facultyDigest.js"></script>
 
 
 

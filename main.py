@@ -18,11 +18,14 @@ import docx
 import pickle
 import wellbeingMonitor
 import courseKnowledgeBase
+import facultyDigest
+import nudgeEngine
 from io import BytesIO
+from pydantic import BaseModel
 
 #http://0.0.0.0:8000/wellbeing_dashboard
 
-app = FastAPI(title="Student Chatbot")
+app = FastAPI(title="FacultyTwin")
 
 # CORS middleware for frontend
 app.add_middleware(
@@ -116,6 +119,69 @@ async def get_wellbeing_dashboard():
                         datetime.datetime.now() - datetime.timedelta(days=7)],
         "student_summary": {}
     }
+
+
+@app.get("/faculty_digest")
+async def get_faculty_digest():
+    """Weekly analytic digest for faculty (see facultyDigest.py).
+
+    Fulfills the grant's 'Weekly analytic digests' outcome -- a per-student
+    engagement + wellbeing summary faculty can actually act on, rather than
+    just a raw flag count.
+    """
+    return facultyDigest.build_weekly_digest(chat_history, wellbeing_flags)
+
+
+class DeadlineRequest(BaseModel):
+    assignment_id: str
+    course: str
+    title: str
+    due: datetime.datetime
+
+
+@app.post("/deadlines")
+async def add_deadline(deadline: DeadlineRequest):
+    """Register an assignment deadline for the nudge engine (see nudgeEngine.py).
+
+    Fulfills the grant's 'Nudges for deadlines' outcome. Subscribed
+    students (opted in via the Discord bot's !subscribe_nudges command) get
+    a DM at the 24-hour and 2-hour marks before the deadline.
+    """
+    nudgeEngine.add_deadline(
+        deadline.assignment_id, deadline.course, deadline.title, deadline.due
+    )
+    return {"message": f"Deadline registered for {deadline.title}"}
+
+
+@app.get("/deadlines")
+async def list_deadlines():
+    return nudgeEngine.deadlines
+
+
+@app.on_event("startup")
+async def launch_discord_bot():
+    """Start the Discord bot in this same process, if configured.
+
+    This has to run in-process (not as a separate `python discordBot.py`
+    subprocess) so the bot shares the exact same knowledge_base,
+    chat_history, and wellbeing_flags objects as the web/WebSocket path --
+    a separate process would re-run this whole module and get its own
+    empty copies of everything, silently desyncing Discord from the web
+    widget. The import happens here, inside the handler, rather than at
+    the top of this file: discordBot.py does `from main import
+    knowledge_base, ...`, and by the time this startup event fires this
+    module has already finished executing, so that import resolves
+    cleanly instead of hitting a circular-import error.
+    """
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token:
+        print("ℹ️  DISCORD_BOT_TOKEN not set -- Discord bot will not start.")
+        print("   (Web chat and the faculty dashboard still work normally.)")
+        return
+
+    import discordBot
+    asyncio.create_task(discordBot.bot.start(token))
+    print("🤖 Discord bot starting in the background...")
 
 @app.websocket("/ws/{student_id}")
 async def websocket_endpoint(websocket: WebSocket, student_id: str):

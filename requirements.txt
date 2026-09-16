@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+websockets
+sentence-transformers
+textblob
+vaderSentiment
+PyPDF2
+faiss-cpu
+ollama
+python-multipart
+python-docx
+pydantic
+discord.py
