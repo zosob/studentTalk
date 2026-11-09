@@ -1,33 +1,35 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import ollama
-import asyncio
+import datetime
 import json
-import PyPDF2
-from sentence_transformers import SentenceTransformer
+import os
+from io import BytesIO
+
+import docx
+import faiss
 import numpy as np
+import ollama
+import PyPDF2
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from sentence_transformers import SentenceTransformer
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import datetime
-import os
-from typing import List, Dict, Any
-import faiss
-import docx
-import pickle
-import wellbeingMonitor
+
 import courseKnowledgeBase
-import facultyDigest
-import nudgeEngine
-from io import BytesIO
-from pydantic import BaseModel
+import wellbeingMonitor
+from database import (
+    Conversation,
+    Document,
+    FlaggedEvent,
+    SessionLocal,
+    Student,
+    hash_content,
+    init_db,
+)
 
-#http://0.0.0.0:8000/wellbeing_dashboard
+app = FastAPI(title="Student Chatbot")
 
-app = FastAPI(title="FacultyTwin")
-
-# CORS middleware for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,185 +38,165 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize models and analyzers
+# Initialize models
 sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
 sentiment_analyzer = SentimentIntensityAnalyzer()
 
-# In-memory storage (replace with database later)
-course_content = {}
-chat_history = []
-student_interactions = {}
-wellbeing_flags = []
-
-
-#Initialize wellbeing monitor and knowledgebase
+# Initialize modules
 wellbeing_monitor = wellbeingMonitor.WellbeingMonitor()
-
 knowledge_base = courseKnowledgeBase.CourseKnowledgeBase()
+
+# Create DB tables on startup
+init_db()
+
+
+def _extract_text(content: bytes, filename: str) -> str:
+    if filename.endswith('.pdf'):
+        pdf_reader = PyPDF2.PdfReader(BytesIO(content))
+        return "".join(page.extract_text() for page in pdf_reader.pages)
+    elif filename.endswith('.docx'):
+        document = docx.Document(BytesIO(content))
+        return "".join(p.text for p in document.paragraphs)
+    else:
+        return content.decode('utf-8')
 
 
 @app.post("/upload_syllabus")
 async def upload_syllabus(file: UploadFile = File(...)):
-    
     try:
         content = await file.read()
-        
-        if file.filename.endswith('.pdf'):
-            # Extract text from PDF
-            pdf_reader = PyPDF2.PdfReader(BytesIO(content))
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text()
-        elif file.filename.endswith('.docx'):
-            #Extract text from .docx files
-            document = docx.Document(BytesIO(content))
-            text = ""
-
-            for paragraph in document.paragraphs:
-                text += paragraph.text 
-        else:
-            text = content.decode('utf-8')
-        
+        text = _extract_text(content, file.filename)
         knowledge_base.add_document(text, file.filename)
+
+        db = SessionLocal()
+        try:
+            db.add(Document(filename=file.filename, course_id=None, content_hash=hash_content(text)))
+            db.commit()
+        finally:
+            db.close()
+
         return {"message": f"Successfully uploaded {file.filename}"}
-    
     except Exception as e:
         return {"error": str(e)}
-    
+
 
 @app.post("/uploadAssignment")
-async def uploadAssignment(file: UploadFile = File(...)):
+async def upload_assignment(file: UploadFile = File(...)):
     try:
         content = await file.read()
-        
-        if file.filename.endswith('.pdf'):
-            # Extract text from PDF
-            pdf_reader = PyPDF2.PdfReader(BytesIO(content))
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text()
-        elif file.filename.endswith('.docx'):
-            #Extract text from .docx files
-            document = docx.Document(BytesIO(content))
-            text = ""
-
-            for paragraph in document.paragraphs:
-                text += paragraph.text 
-        else:
-            text = content.decode('utf-8')
-        
+        text = _extract_text(content, file.filename)
         knowledge_base.add_document(text, file.filename)
+
+        db = SessionLocal()
+        try:
+            db.add(Document(filename=file.filename, course_id=None, content_hash=hash_content(text)))
+            db.commit()
+        finally:
+            db.close()
+
         return {"message": f"Successfully uploaded {file.filename}"}
-    
     except Exception as e:
         return {"error": str(e)}
-    
+
 
 @app.get("/wellbeing_dashboard")
 async def get_wellbeing_dashboard():
-    return {
-        "total_flags": len(wellbeing_flags),
-        "recent_flags": [flag for flag in wellbeing_flags if 
-                        datetime.datetime.fromisoformat(flag['timestamp']) > 
-                        datetime.datetime.now() - datetime.timedelta(days=7)],
-        "student_summary": {}
-    }
+    db = SessionLocal()
+    try:
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+        total_flags = db.query(FlaggedEvent).count()
+        recent_events = db.query(FlaggedEvent).filter(FlaggedEvent.timestamp >= cutoff).all()
 
+        all_flags = db.query(FlaggedEvent).all()
+        student_summary = {}
+        for flag in all_flags:
+            sid = flag.student_id
+            if sid not in student_summary:
+                student_summary[sid] = {"flag_count": 0, "last_flagged": None, "reviewed_count": 0}
+            student_summary[sid]["flag_count"] += 1
+            if (
+                student_summary[sid]["last_flagged"] is None
+                or flag.timestamp > datetime.datetime.fromisoformat(student_summary[sid]["last_flagged"])
+            ):
+                student_summary[sid]["last_flagged"] = flag.timestamp.isoformat()
+            if flag.reviewed:
+                student_summary[sid]["reviewed_count"] += 1
 
-@app.get("/faculty_digest")
-async def get_faculty_digest():
-    """Weekly analytic digest for faculty (see facultyDigest.py).
+        return {
+            "total_flags": total_flags,
+            "recent_flags": [
+                {
+                    "id": e.id,
+                    "student_id": e.student_id,
+                    "timestamp": e.timestamp.isoformat(),
+                    "reason": e.reason,
+                    "severity": e.severity,
+                    "reviewed": e.reviewed,
+                }
+                for e in recent_events
+            ],
+            "student_summary": student_summary,
+        }
+    finally:
+        db.close()
 
-    Fulfills the grant's 'Weekly analytic digests' outcome -- a per-student
-    engagement + wellbeing summary faculty can actually act on, rather than
-    just a raw flag count.
-    """
-    return facultyDigest.build_weekly_digest(chat_history, wellbeing_flags)
-
-
-class DeadlineRequest(BaseModel):
-    assignment_id: str
-    course: str
-    title: str
-    due: datetime.datetime
-
-
-@app.post("/deadlines")
-async def add_deadline(deadline: DeadlineRequest):
-    """Register an assignment deadline for the nudge engine (see nudgeEngine.py).
-
-    Fulfills the grant's 'Nudges for deadlines' outcome. Subscribed
-    students (opted in via the Discord bot's !subscribe_nudges command) get
-    a DM at the 24-hour and 2-hour marks before the deadline.
-    """
-    nudgeEngine.add_deadline(
-        deadline.assignment_id, deadline.course, deadline.title, deadline.due
-    )
-    return {"message": f"Deadline registered for {deadline.title}"}
-
-
-@app.get("/deadlines")
-async def list_deadlines():
-    return nudgeEngine.deadlines
-
-
-@app.on_event("startup")
-async def launch_discord_bot():
-    """Start the Discord bot in this same process, if configured.
-
-    This has to run in-process (not as a separate `python discordBot.py`
-    subprocess) so the bot shares the exact same knowledge_base,
-    chat_history, and wellbeing_flags objects as the web/WebSocket path --
-    a separate process would re-run this whole module and get its own
-    empty copies of everything, silently desyncing Discord from the web
-    widget. The import happens here, inside the handler, rather than at
-    the top of this file: discordBot.py does `from main import
-    knowledge_base, ...`, and by the time this startup event fires this
-    module has already finished executing, so that import resolves
-    cleanly instead of hitting a circular-import error.
-    """
-    token = os.environ.get("DISCORD_BOT_TOKEN")
-    if not token:
-        print("ℹ️  DISCORD_BOT_TOKEN not set -- Discord bot will not start.")
-        print("   (Web chat and the faculty dashboard still work normally.)")
-        return
-
-    import discordBot
-    asyncio.create_task(discordBot.bot.start(token))
-    print("🤖 Discord bot starting in the background...")
 
 @app.websocket("/ws/{student_id}")
 async def websocket_endpoint(websocket: WebSocket, student_id: str):
     await websocket.accept()
-    
-    if student_id not in student_interactions:
-        student_interactions[student_id] = []
-    
+
+    db = SessionLocal()
+    try:
+        if not db.query(Student).filter(Student.student_id == student_id).first():
+            db.add(Student(student_id=student_id))
+            db.commit()
+    finally:
+        db.close()
+
     try:
         while True:
-            # Receive message from student
             data = await websocket.receive_text()
             message_data = json.loads(data)
             user_message = message_data.get('message', '')
-            
-            # Log interaction
-            interaction = {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'student_id': student_id,
-                'message': user_message,
-                'type': 'user'
-            }
-            student_interactions[student_id].append(interaction)
-            chat_history.append(interaction)
-            
-            # Analyze wellbeing
+            now = datetime.datetime.utcnow()
+
+            db = SessionLocal()
+            try:
+                db.add(Conversation(
+                    student_id=student_id,
+                    timestamp=now,
+                    message=user_message,
+                    role='user',
+                    wellbeing_score=None,
+                ))
+                db.commit()
+            finally:
+                db.close()
+
             wellbeing_analysis = wellbeing_monitor.analyze_message(user_message, student_id)
-            
-            # Search knowledge base for relevant content
+
+            if wellbeing_analysis['flag_for_review']:
+                stress = wellbeing_analysis['stress_indicators']
+                confusion = wellbeing_analysis['confusion_indicators']
+                reason = f"stress_indicators={stress}, confusion_indicators={confusion}"
+                severity = round(10 - wellbeing_analysis['wellbeing_score'], 2)
+
+                db = SessionLocal()
+                try:
+                    db.add(FlaggedEvent(
+                        student_id=student_id,
+                        timestamp=now,
+                        reason=reason,
+                        severity=severity,
+                        reviewed=False,
+                    ))
+                    db.commit()
+                finally:
+                    db.close()
+
             relevant_docs = knowledge_base.search_similar(user_message)
             context = "\n".join([doc['content'] for doc in relevant_docs[:2]])
-            
-            # Generate response using Ollama
+
             prompt = f"""You are a helpful academic assistant for undergraduate students in C++ programming and algorithms courses.
 
 Context from course materials:
@@ -227,43 +209,44 @@ Please provide a helpful, encouraging response. If the question is about course 
 Response:"""
 
             try:
-                response = ollama.generate(
-                    model='llama3.1:8b',
-                    prompt=prompt,
-                    stream=False
-                )
+                response = ollama.generate(model='llama3.1:8b', prompt=prompt, stream=False)
                 bot_response = response['response']
-                
-            except Exception as e:
-                bot_response = "I'm sorry, I'm having trouble processing your request right now. Please try again or contact your instructor."
-            
-            # Log bot response
-            bot_interaction = {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'student_id': student_id,
-                'message': bot_response,
-                'type': 'bot',
-                'wellbeing_score': wellbeing_analysis['wellbeing_score']
-            }
-            student_interactions[student_id].append(bot_interaction)
-            chat_history.append(bot_interaction)
+            except Exception:
+                bot_response = (
+                    "I'm sorry, I'm having trouble processing your request right now. "
+                    "Please try again or contact your instructor."
+                )
 
-            
-            # Send response back to student
+            db = SessionLocal()
+            try:
+                db.add(Conversation(
+                    student_id=student_id,
+                    timestamp=datetime.datetime.utcnow(),
+                    message=bot_response,
+                    role='bot',
+                    wellbeing_score=wellbeing_analysis['wellbeing_score'],
+                ))
+                db.commit()
+            finally:
+                db.close()
+
             await websocket.send_text(json.dumps({
                 'message': bot_response,
                 'wellbeing_score': wellbeing_analysis['wellbeing_score'],
-                'flagged': wellbeing_analysis['flag_for_review']
+                'flagged': wellbeing_analysis['flag_for_review'],
             }))
-            
+
     except WebSocketDisconnect:
         print(f"Student {student_id} disconnected")
 
-# Serve static files (HTML frontend)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
 @app.get("/")
 async def get_homepage():
     return FileResponse("static/index.html")
+
 
 if __name__ == "__main__":
     import uvicorn
