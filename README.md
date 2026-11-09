@@ -1,125 +1,233 @@
-# FacultyTwin
+# StudentTalk
 
-FacultyTwin is a course-grounded AI teaching assistant: it answers student
-questions using a professor's own syllabus and course materials (RAG over
-uploaded PDFs/docs), flags signs of student stress or confusion during
-conversations, and gives faculty a weekly digest of engagement and wellbeing
-trends. It's designed to run locally with Ollama so student data never
-leaves the institution.
+An AI-powered academic chatbot with early-warning wellbeing monitoring for undergraduate students.
 
-This repo is the open-source release referenced in our grant proposal's
-Outcomes section — released for peer adoption and community-led iteration.
+Students ask questions about course material via a chat interface. Behind the scenes, every message is analysed for stress and confusion signals. When a student's wellbeing score drops below a threshold, the event is flagged and stored for faculty review.
 
-## Features
-
-- **Course knowledge base** (`courseKnowledgeBase.py`) — RAG over uploaded
-  syllabi/assignments (PDF, DOCX, TXT) using sentence-transformer embeddings
-  and a FAISS index.
-- **Chat interface** — a WebSocket endpoint (`main.py`) plus a static web
-  frontend, and a **Discord bot** (`discordBot.py`) so students can reach
-  the assistant where they already are.
-- **Wellbeing monitoring** (`wellbeingMonitor.py`) — sentiment analysis
-  (VADER + TextBlob) and stress/confusion keyword detection on every
-  message, producing a 0–10 wellbeing score and flagging concerning
-  messages for review.
-- **Deadline nudges** (`nudgeEngine.py`) — students opt in via Discord;
-  the bot DMs a reminder at 24 hours and 2 hours before a registered
-  assignment deadline.
-- **Faculty digest** (`facultyDigest.py`) — a weekly, per-student summary
-  of message volume, average wellbeing score, and flags, available at
-  `GET /faculty_digest`.
+---
 
 ## Architecture
 
 ```
-Student ──► Discord bot (discordBot.py) ─┐
-                                          ├─► main.py (FastAPI)
-Student ──► Web widget (static/) ────────┘        │
-                                                    ├─► courseKnowledgeBase.py (RAG / FAISS)
-                                                    ├─► wellbeingMonitor.py (sentiment)
-                                                    ├─► nudgeEngine.py (deadline reminders)
-                                                    ├─► facultyDigest.py (weekly report)
-                                                    └─► Ollama (llama3.1:8b, local)
+Browser
+  |
+  |-- student.html  --WebSocket-->  /ws/{student_id}
+  |                                       |
+  `-- faculty.html  --POST------->  /upload_syllabus
+                                   /uploadAssignment
+                                   /wellbeing_dashboard
+                                          |
+                              +-----------.---------------+
+                              v           v               v
+                        Wellbeing    Ollama LLM      PostgreSQL
+                        Monitor      (llama3.1:8b)   (or SQLite)
+                              |                          |
+                              `---- FlaggedEvent --------'
+                                    Conversation
+                                    Student
+                                    Document
 ```
 
-Storage is currently in-memory (see the `# In-memory storage` comment in
-`main.py`); a PostgreSQL layer is the next planned step so history survives
-restarts.
+**Key components**
+
+| File | Purpose |
+|---|---|
+| `main.py` | FastAPI app - routes, WebSocket handler, DB persistence |
+| `database.py` | SQLAlchemy models and engine setup |
+| `wellbeingMonitor.py` | VADER + TextBlob sentiment scoring, keyword detection |
+| `courseKnowledgeBase.py` | FAISS vector index for semantic search over uploaded materials |
+| `run_chatbot.py` | Startup script - installs deps, checks Ollama and DB, launches server |
+| `static/` | HTML frontend (student chat, faculty upload) |
+
+---
+
+## Database Schema
+
+```
+students
+  student_id   TEXT  PK
+  course        TEXT
+  enrolled_at   TIMESTAMP
+
+conversations
+  id             INT   PK
+  student_id     TEXT  (FK -> students)
+  timestamp      TIMESTAMP
+  message        TEXT
+  role           TEXT  ('user' | 'bot')
+  wellbeing_score FLOAT
+
+flagged_events
+  id          INT   PK
+  student_id  TEXT  (FK -> students)
+  timestamp   TIMESTAMP
+  reason      TEXT  (e.g. "stress_indicators=3, confusion_indicators=1")
+  severity    FLOAT (0-10, higher = more severe)
+  reviewed    BOOL
+
+documents
+  id            INT   PK
+  filename      TEXT
+  course_id     TEXT  (null until multi-tenant support is added)
+  uploaded_at   TIMESTAMP
+  content_hash  TEXT  (SHA-256 of extracted text)
+```
+
+Tables are created automatically on startup if they do not exist.
+
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Python 3.10+ | Tested on 3.11 |
+| [Ollama](https://ollama.com) | Must be running locally with `llama3.1:8b` pulled |
+| PostgreSQL 14+ | Optional - SQLite is used automatically if `DATABASE_URL` is not set |
+| conda (recommended) | Environment name `student-chatbot` |
+
+---
 
 ## Setup
 
-### 1. Install Ollama and pull the model
+### 1. Create and activate the conda environment
 
 ```bash
-# https://ollama.com
-ollama serve
-ollama pull llama3.1:8b
+conda create -n student-chatbot python=3.11
+conda activate student-chatbot
 ```
 
 ### 2. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install fastapi "uvicorn[standard]" websockets sentence-transformers \
+    textblob vaderSentiment PyPDF2 faiss-cpu ollama python-multipart \
+    sqlalchemy psycopg2-binary python-dotenv python-docx
 ```
 
-Or use the guided setup script, which checks Ollama and installs packages
-for you:
+Or let the startup script handle it:
 
 ```bash
 python run_chatbot.py
 ```
 
-### 3. Run the server
+### 3. Configure the database
+
+Copy the example env file and fill in your credentials:
 
 ```bash
-python main.py
+cp .env.example .env
 ```
 
-- Chat widget: http://localhost:8000
-- Faculty wellbeing dashboard: http://localhost:8000/wellbeing_dashboard
-- Faculty weekly digest: http://localhost:8000/faculty_digest
+**.env** (PostgreSQL):
+```
+DATABASE_URL=postgresql://user:password@localhost:5432/studenttalk
+```
 
-### 4. (Optional) Run the Discord bot
+**.env** (SQLite - no setup needed, good for local dev):
+```
+# leave DATABASE_URL unset, or:
+DATABASE_URL=sqlite:///./studenttalk.db
+```
 
-1. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications),
-   enable the **Message Content Intent**, and invite it to your server.
-2. Export the token and start the bot alongside the server:
-
-   ```bash
-   export DISCORD_BOT_TOKEN=your-token-here
-   python discordBot.py
-   ```
-
-3. In Discord: `!ask <question>`, `!subscribe_nudges` / `!unsubscribe_nudges`
-   for deadline reminders.
-
-### 5. Register assignment deadlines (for nudges)
+Create the PostgreSQL database if you haven't already:
 
 ```bash
-curl -X POST http://localhost:8000/deadlines \
-  -H "Content-Type: application/json" \
-  -d '{"assignment_id": "hw3", "course": "CS 201", "title": "Homework 3", "due": "2026-10-01T23:59:00"}'
+createdb studenttalk
 ```
 
-## Privacy
+Tables are created automatically when the app starts.
 
-All processing runs locally via Ollama by default — no student message
-content is sent to a third-party API. Wellbeing flags are stored in-memory
-for faculty review and are not shared outside the course context. See the
-grant proposal for the full data-handling and opt-in participation plan.
+### 4. Start Ollama
+
+```bash
+ollama serve
+ollama pull llama3.1:8b
+```
+
+### 5. Run the server
+
+```bash
+python run_chatbot.py
+# or directly:
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Landing page |
+| `GET` | `/static/student.html` | Student chat UI |
+| `GET` | `/static/faculty.html` | Faculty upload UI |
+| `POST` | `/upload_syllabus` | Upload a syllabus (PDF / DOCX / TXT) |
+| `POST` | `/uploadAssignment` | Upload an assignment document |
+| `GET` | `/wellbeing_dashboard` | JSON summary of flags and per-student stats |
+| `WS` | `/ws/{student_id}` | Real-time chat for a student |
+
+### WebSocket message format
+
+**Client -> Server**
+```json
+{ "message": "I'm really struggling with pointers" }
+```
+
+**Server -> Client**
+```json
+{
+  "message": "Let's break pointers down step by step...",
+  "wellbeing_score": 4.2,
+  "flagged": false
+}
+```
+
+### Wellbeing dashboard response
+
+```json
+{
+  "total_flags": 12,
+  "recent_flags": [
+    {
+      "id": 7,
+      "student_id": "student_abc123",
+      "timestamp": "2026-03-30T14:22:00",
+      "reason": "stress_indicators=3, confusion_indicators=2",
+      "severity": 8.1,
+      "reviewed": false
+    }
+  ],
+  "student_summary": {
+    "student_abc123": {
+      "flag_count": 3,
+      "last_flagged": "2026-03-30T14:22:00",
+      "reviewed_count": 1
+    }
+  }
+}
+```
+
+---
+
+## Wellbeing Scoring
+
+Each student message is scored 0-10 (lower = more concerning):
+
+```
+score = 5
+      + (vader_compound + 1) x 2.5   # sentiment: scales [-1,1] to [0,5]
+      - stress_keyword_count  x 1.5
+      - confusion_keyword_count x 0.5
+```
+
+A `FlaggedEvent` is written to the database when `score < 3.0` or `stress_keywords > 2`.
+
+---
 
 ## Roadmap
 
-- [ ] Persist chat history, flags, and deadlines to PostgreSQL
-- [ ] Faculty authentication for the dashboard/digest endpoints
-- [ ] Course-scoped (multi-tenant) knowledge bases
-- [ ] Pilot evaluation + published outcome metrics (see grant Outcomes)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Citing this project
-
-A peer-reviewed writeup and conference presentation are planned as part of
-the funded pilot; citation details will be added here once published.
+- **User Authentication** - JWT-based login; faculty and student roles; protect `/wellbeing_dashboard` behind faculty auth
+- **Wellbeing Dashboard UI** - Timeline of flags per student, sentiment trend graphs, weekly summary view
+- **Multi-tenant / Course Support** - Scope uploaded documents to a `course_id` so different courses get different RAG context
+- **Alembic Migrations** - Schema version control as the DB evolves
